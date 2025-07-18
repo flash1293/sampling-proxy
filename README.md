@@ -17,7 +17,6 @@ graph TD
     %% Define the interactions and data flows
     Client -- "Sends _bulk data" --> Proxy
     Kibana -- "Manages sampling sessions (/.._samples)" --> Proxy
-    Kibana -- "Sends other API requests (_simulate, etc.)" --> Proxy
 
     Proxy -- "Forwards original requests" --> Elasticsearch
     Kibana -- "Runs _simulate for sampling logic" --> Elasticsearch
