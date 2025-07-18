@@ -7,6 +7,7 @@ import random
 from collections import deque
 import base64
 import uuid
+import urllib.parse
 
 # --- Configuration ---
 ES_HOST = 'http://localhost:9200'
@@ -79,10 +80,6 @@ async def process_sampling_for_bulk(body_text, app_session):
     if not docs_to_simulate:
         return # No valid documents found in bulk request.
 
-    print("[DEBUG] Parsed docs from bulk:")
-    for doc in docs_to_simulate:
-        print(json.dumps(doc))
-
     # Step 1: Run a general simulation to find out the destination index for all docs.
     # Use the _ingest/_simulate endpoint (no pipeline specified).
     initial_simulation_result = await run_simulation(
@@ -91,27 +88,17 @@ async def process_sampling_for_bulk(body_text, app_session):
     if not initial_simulation_result or "docs" not in initial_simulation_result:
         return
 
-    print("[DEBUG] Docs returned from first simulate:")
-    for doc in initial_simulation_result["docs"]:
-        print(json.dumps(doc))
-
-    # Map from (_index, _id) to the original doc as seen in the bulk request
-    original_doc_map = { (doc["_index"], doc["_id"]): doc["_source"] for doc in docs_to_simulate }
+    # Map from _id to the original doc as seen in the bulk request
+    original_doc_map = { doc["_id"]: doc["_source"] for doc in docs_to_simulate }
 
     # A map of {destination_index: [list_of_transformed_docs]}
     docs_by_destination = {}
     for result in initial_simulation_result["docs"]:
-        print(f"[DEBUG] Processing result: {json.dumps(result)}")
         if "doc" in result and "_index" in result["doc"]:
             dest_index = result["doc"]["_index"]
             if dest_index not in docs_by_destination:
                 docs_by_destination[dest_index] = []
             docs_by_destination[dest_index].append(result["doc"])
-    print("[DEBUG] Docs grouped by destination index:")
-    for dest_index, docs in docs_by_destination.items():
-        print(f"Index: {dest_index}, Docs: {len(docs)}")
-        for doc in docs:
-            print(json.dumps(doc))
 
     # Step 2: For each active session, check if any documents match.
     for stream_name, session_config in SAMPLING_SESSIONS.items():
@@ -150,20 +137,19 @@ async def process_sampling_for_bulk(body_text, app_session):
         if not conditional_sim_result or "docs" not in conditional_sim_result:
             continue
 
-        print(f"[DEBUG] Docs after second simulate for stream '{stream_name}':")
-        for doc in conditional_sim_result.get("docs", []):
-            print(json.dumps(doc))
-
         # Documents that were NOT dropped are our matches.
+        added_count = 0
         for idx, result in enumerate(conditional_sim_result.get("docs", [])):
             # The 'doc' key exists if the processor ran, but is missing if dropped.
             if result and "doc" in result:
                 doc_id = result["doc"].get("_id")
                 # Use the original doc from the bulk request
-                orig_doc = original_doc_map.get((stream_name, doc_id))
+                orig_doc = original_doc_map.get(doc_id)
                 if orig_doc is not None:
                     session_config["samples"].append(orig_doc)
-                    print(f"Sampled doc for '{stream_name}': {json.dumps(orig_doc)}")
+                    added_count += 1
+        if added_count > 0:
+            print(f"Sampled {added_count} document(s) for '{stream_name}'")
 
 
 # --- Request Handlers ---
@@ -258,6 +244,15 @@ async def proxy_request(request, body_override=None):
     headers.pop('Content-Length', None)
     headers.pop('Transfer-Encoding', None)
 
+    # --- Handle basic auth in the incoming URL ---
+    # If the request URL contains userinfo, use it for Authorization header.
+    parsed_url = urllib.parse.urlparse(str(request.url))
+    if parsed_url.username and parsed_url.password:
+        userpass = f"{parsed_url.username}:{parsed_url.password}"
+        basic_auth = base64.b64encode(userpass.encode()).decode()
+        headers['Authorization'] = f"Basic {basic_auth}"
+    # else: leave the default Authorization header set by the session
+
     # Use the body passed from the bulk handler if available, otherwise read from the request.
     data = body_override if body_override is not None else await request.read()
     
@@ -274,6 +269,22 @@ async def proxy_request(request, body_override=None):
             # Clean hop-by-hop headers from the response from Elasticsearch.
             response_headers.pop('Transfer-Encoding', None)
             response_headers.pop('Content-Encoding', None) # Often problematic
+
+            # Ensure response_body is bytes, even if empty
+            if response_body is None:
+                response_body = b''
+
+            # Only set Content-Length if upstream had it and we did not change encoding
+            if 'Content-Length' in response_headers:
+                response_headers['Content-Length'] = str(len(response_body))
+            else:
+                # If upstream did not send Content-Length, do not set it
+                response_headers.pop('Content-Length', None)
+
+            # Debug: print response headers and body length
+            # print(f"Proxy response headers: {response_headers}")
+            # print(f"Proxy response body length: {len(response_body)}")
+
             resp = web.Response(
                 status=es_response.status,
                 headers=response_headers,

@@ -49,7 +49,10 @@ By default, the proxy listens on `localhost:3123` and forwards requests to your 
 
 ### Proxying Elasticsearch
 
-Point your Elasticsearch clients to `http://localhost:3123` instead of directly to Elasticsearch.
+Point your Elasticsearch clients to `http://localhost:3123` instead of directly to Elasticsearch, e.g.
+```
+node scripts/synthtrace.js slash_logs --live --kibana=http://elastic:changeme@localhost:5601 --target=http://elastic:changeme@localhost:3123 --liveBucketSize=10
+```
 
 ### Sampling API
 
