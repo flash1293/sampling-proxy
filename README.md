@@ -2,6 +2,29 @@
 
 A reverse proxy for Elasticsearch that allows sampling of documents from bulk ingest requests based on configurable percentage and condition.
 
+```mermaid
+graph TD
+    subgraph "External Actors"
+        Kibana
+        Client[Client/Shipper]
+    end
+
+    subgraph "Core Infrastructure"
+        Proxy[Reverse Proxy]
+        Elasticsearch
+    end
+
+    %% Define the interactions and data flows
+    Client -- "Sends _bulk data" --> Proxy
+    Kibana -- "Manages sampling sessions (/.._samples)" --> Proxy
+    Kibana -- "Sends other API requests (_simulate, etc.)" --> Proxy
+
+    Proxy -- "Forwards original requests" --> Elasticsearch
+    Kibana -- "Runs _simulate for sampling logic" --> Elasticsearch
+    
+    Proxy -- "Maintains state & sampled docs" --o InternalState((In-Memory State))
+```
+
 ## Requirements
 
 - Python 3.8+
